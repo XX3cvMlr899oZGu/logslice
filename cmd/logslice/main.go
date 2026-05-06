@@ -13,10 +13,10 @@ const timeLayout = "2006-01-02T15:04:05"
 
 func main() {
 	var (
-		filePath  = flag.String("f", "", "Path to the log file (required)")
-		startStr  = flag.String("start", "", "Start timestamp, format: 2006-01-02T15:04:05 (required)")
-		endStr    = flag.String("end", "", "End timestamp, format: 2006-01-02T15:04:05 (required)")
-		outPath   = flag.String("o", "", "Output file path (default: stdout)")
+		filePath = flag.String("f", "", "Path to the log file (required)")
+		startStr = flag.String("start", "", "Start timestamp, format: 2006-01-02T15:04:05 (required)")
+		endStr   = flag.String("end", "", "End timestamp, format: 2006-01-02T15:04:05 (required)")
+		outPath  = flag.String("o", "", "Output file path (default: stdout)")
 	)
 	flag.Parse()
 
@@ -35,6 +35,11 @@ func main() {
 	end, err := time.Parse(timeLayout, *endStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: invalid -end value %q: %v\n", *endStr, err)
+		os.Exit(1)
+	}
+
+	if !end.After(start) {
+		fmt.Fprintf(os.Stderr, "error: -end %q must be after -start %q\n", *endStr, *startStr)
 		os.Exit(1)
 	}
 
