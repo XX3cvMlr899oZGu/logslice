@@ -76,6 +76,22 @@ func TestReadAllLines(t *testing.T) {
 	}
 }
 
+func TestLineReaderEmptyFile(t *testing.T) {
+	path := writeTempFile(t, "")
+	r, err := NewLineReader(path)
+	if err != nil {
+		t.Fatalf("NewLineReader error: %v", err)
+	}
+	defer r.Close()
+
+	if r.Next() {
+		t.Errorf("expected no lines in empty file, got %q", r.Line())
+	}
+	if r.Err() != nil {
+		t.Fatalf("unexpected error for empty file: %v", r.Err())
+	}
+}
+
 func TestLineReaderMissingFile(t *testing.T) {
 	_, err := NewLineReader("/nonexistent/path/file.log")
 	if err == nil {
