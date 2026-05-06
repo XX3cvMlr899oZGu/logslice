@@ -80,3 +80,25 @@ func TestAcceptCombinedFilters(t *testing.T) {
 		t.Error("expected WARN+keyword line to be rejected (below min level)")
 	}
 }
+
+func TestAcceptKeywordCaseInsensitive(t *testing.T) {
+	f, err := filter.New(filter.Options{Keyword: "timeout"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"2024-01-01T00:00:00Z ERROR connection TIMEOUT", true},
+		{"2024-01-01T00:00:00Z ERROR connection Timeout", true},
+		{"2024-01-01T00:00:00Z ERROR connection timeout", true},
+		{"2024-01-01T00:00:00Z ERROR disk full", false},
+	}
+	for _, tc := range cases {
+		got := f.Accept(tc.line)
+		if got != tc.want {
+			t.Errorf("Accept(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
