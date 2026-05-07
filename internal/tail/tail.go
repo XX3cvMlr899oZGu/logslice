@@ -1,113 +1,129 @@
-// Package tail provides functionality for following a log file in real-time,
-// similar to `tail -f`, emitting new lines as they are appended.
 package tail
 
 import (
 	"bufio"
-	"context"
+	"fmt"
 	"io"
 	"os"
 	"time"
 )
 
-// DefaultPollInterval is how often the tailer checks for new data when the
-// file has not grown since the last read.
-const DefaultPollInterval = 200 * time.Millisecond
+const defaultPollInterval = 250 * time.Millisecond
 
-// Line represents a single line emitted by the tailer.
-type Line struct {
-	Text   string
-	Offset int64 // byte offset of the start of this line in the file
+// Options configures Tailer behaviour.
+type Options struct {
+	// PollInterval is how often the file is checked for new content.
+	// Defaults to 250ms when zero.
+	PollInterval time.Duration
 }
 
-// Tailer follows a file, sending new lines to a channel as they appear.
+// Tailer follows a file, emitting new lines as they are appended.
 type Tailer struct {
-	path         string
-	pollInterval time.Duration
-	lines        chan Line
-	errs         chan error
+	path   string
+	opts   Options
+	lines  chan string
+	stopCh chan struct{}
 }
 
-// New creates a Tailer for the given file path.
-// pollInterval controls how frequently the file is polled for new content;
-// pass 0 to use DefaultPollInterval.
-func New(path string, pollInterval time.Duration) *Tailer {
-	if pollInterval <= 0 {
-		pollInterval = DefaultPollInterval
-	}
-	return &Tailer{
-		path:         path,
-		pollInterval: pollInterval,
-		lines:        make(chan Line, 64),
-		errs:         make(chan error, 1),
-	}
-}
-
-// Lines returns the channel on which new lines are delivered.
-func (t *Tailer) Lines() <-chan Line { return t.lines }
-
-// Errs returns the channel on which a terminal error is delivered.
-// At most one error will be sent; the channel is closed after that.
-func (t *Tailer) Errs() <-chan error { return t.errs }
-
-// Follow opens the file, seeks to the end, and begins emitting lines until
-// ctx is cancelled. It is intended to be run in its own goroutine.
-func (t *Tailer) Follow(ctx context.Context) {
-	defer close(t.lines)
-	defer close(t.errs)
-
-	f, err := os.Open(t.path)
+// New opens path and starts tailing it. Returns an error if the file cannot
+// be opened.
+func New(path string, opts Options) (*Tailer, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		t.errs <- err
-		return
+		return nil, fmt.Errorf("tail: open %s: %w", path, err)
 	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("tail: seek %s: %w", path, err)
+	}
+
+	if opts.PollInterval == 0 {
+		opts.PollInterval = defaultPollInterval
+	}
+
+	t := &Tailer{
+		path:   path,
+		opts:   opts,
+		lines:  make(chan string, 64),
+		stopCh: make(chan struct{}),
+	}
+
+	go t.follow(f)
+	return t, nil
+}
+
+// Lines returns the channel on which tailed lines are delivered.
+func (t *Tailer) Lines() <-chan string {
+	return t.lines
+}
+
+// Stop signals the tailer to stop and waits until the background goroutine
+// has exited.
+func (t *Tailer) Stop() {
+	close(t.stopCh)
+}
+
+func (t *Tailer) follow(f *os.File) {
+	defer close(t.lines)
 	defer f.Close()
 
-	// Seek to end so we only tail new content.
-	offset, err := f.Seek(0, io.SeekEnd)
-	if err != nil {
-		t.errs <- err
-		return
-	}
-
 	reader := bufio.NewReader(f)
-	ticker := time.NewTicker(t.pollInterval)
+	ticker := time.NewTicker(t.opts.PollInterval)
 	defer ticker.Stop()
 
 	for {
-		// Drain all available lines before waiting for the next tick.
-		for {
-			text, readErr := reader.ReadString('\n')
-			if len(text) > 0 {
-				// Strip the trailing newline for consistency with other
-				// components in the pipeline.
-				if len(text) > 0 && text[len(text)-1] == '\n' {
-					text = text[:len(text)-1]
-				}
-				select {
-				case t.lines <- Line{Text: text, Offset: offset}:
-				case <-ctx.Done():
-					return
-				}
-				offset += int64(len(text)) + 1
-			}
-			if readErr == io.EOF {
-				// No more data right now; wait for the next poll tick.
-				break
-			}
-			if readErr != nil {
-				t.errs <- readErr
+		select {
+		case <-t.stopCh:
+			return
+		case <-ticker.C:
+			if err := t.drainLines(f, reader); err != nil {
 				return
 			}
 		}
+	}
+}
 
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			// Reset the reader so it picks up any new bytes written since the
-			// last read (the underlying *os.File position is already advanced).
-			reader.Reset(f)
+func (t *Tailer) drainLines(f *os.File, r *bufio.Reader) error {
+	for {
+		line, err := r.ReadString('\n')
+		if len(line) > 0 {
+			// Strip trailing newline before sending.
+			if len(line) > 0 && line[len(line)-1] == '\n' {
+				line = line[:len(line)-1]
+			}
+			select {
+			case t.lines <- line:
+			case <-t.stopCh:
+				return fmt.Errorf("stopped")
+			}
+		}
+		if err == io.EOF {
+			// Check for truncation / rotation.
+			if rotated, _ := isRotated(f); rotated {
+				newF, err := os.Open(t.path)
+				if err != nil {
+					return err
+				}
+				f.Close()
+				*f = *newF
+				r.Reset(f)
+			}
+			return nil
+		}
+		if err != nil {
+			return err
 		}
 	}
+}
+
+func isRotated(f *os.File) (bool, error) {
+	cur, err := f.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return false, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	return info.Size() < cur, nil
 }
