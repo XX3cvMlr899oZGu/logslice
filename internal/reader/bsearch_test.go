@@ -76,3 +76,31 @@ func TestSeekToTimeBeforeAll(t *testing.T) {
 		t.Errorf("expected offset 0 for target before all lines, got %d", offset)
 	}
 }
+
+func TestSeekToTimeAfterAll(t *testing.T) {
+	base := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
+	n := 20
+	path := buildLogFile(t, base, n)
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer f.Close()
+
+	// Target is after the last log line.
+	target := base.Add(time.Duration(n+10) * time.Minute)
+	offset, err := SeekToTime(f, target)
+	if err != nil {
+		t.Fatalf("SeekToTime error: %v", err)
+	}
+
+	// Seeking past all lines should return an offset at or beyond the last line,
+	// meaning no lines are readable at that position.
+	if _, err := f.Seek(offset, 0); err != nil {
+		t.Fatalf("seek: %v", err)
+	}
+	r := NewLineReaderFromFile(f)
+	if r.Next() {
+		t.Errorf("expected no lines after seeking past all entries, got: %q", r.Line())
+	}
+}
