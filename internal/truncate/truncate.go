@@ -55,3 +55,13 @@ func (t *Truncator) Apply(line string) string {
 	buf = append(buf, suf...)
 	return string(buf)
 }
+
+// ApplyLines applies Apply to each element of lines and returns the results.
+// The returned slice has the same length as the input.
+func (t *Truncator) ApplyLines(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = t.Apply(l)
+	}
+	return out
+}
