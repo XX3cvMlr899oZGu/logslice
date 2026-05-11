@@ -69,3 +69,15 @@ func TestExtractInvalidJSONReturnsEmpty(t *testing.T) {
 		t.Errorf("expected empty fields for invalid JSON, got %v", fields)
 	}
 }
+
+func TestExtractJSONNestedValueSkipped(t *testing.T) {
+	// Nested objects are not representable as a flat string value;
+	// Extract should omit keys whose values are objects or arrays.
+	fields := schema.Extract(`{"level":"info","meta":{"host":"srv1"}}`)
+	if fields["level"] != "info" {
+		t.Errorf("level: got %q", fields["level"])
+	}
+	if _, ok := fields["meta"]; ok {
+		t.Errorf("expected nested object key 'meta' to be omitted, but it was present")
+	}
+}
